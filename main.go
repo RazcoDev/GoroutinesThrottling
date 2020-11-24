@@ -3,7 +3,10 @@ package main
 import (
 	"flag"
 	"fmt"
+	"os"
+	"os/signal"
 	"strconv"
+	"syscall"
 	"time"
 )
 
@@ -24,6 +27,7 @@ func main() {
 
 	// Channels for managing the jobs
 	finishChannel := make(chan bool)
+	interruptChannel := make(chan os.Signal, 1)
 	waitForJobsChannel := make(chan bool)
 	goroutinesChannel := make(chan struct{}, *maxGoroutinesAtOnce)
 
@@ -35,11 +39,18 @@ func main() {
 		goroutinesChannel <- struct{}{}
 	}
 
+	signal.Notify(interruptChannel, os.Interrupt, syscall.SIGTERM)
+
 	// When job is finished, let another job to run.
 	go func() {
+
 		for i := 0; i < jobsCount; i++ {
 			<-finishChannel
 			goroutinesChannel <- struct{}{}
+			if len(interruptChannel) > 0 {
+				fmt.Println("\r- Ctrl+C interrupt pressed in Terminal")
+				break
+			}
 		}
 		waitForJobsChannel <- true
 	}()
@@ -47,16 +58,19 @@ func main() {
 	// The job is waiting to launch until the goroutineChannel will be filled again
 	// Running processRequest function with duration from command-line arguments.
 	for i := 0; i < jobsCount; i++ {
-		fmt.Printf("Job ID: %v: Job waiting\n", i)
-		<-goroutinesChannel
-		fmt.Printf("Job ID: %v: Job is running\n", i)
-		go func(id int) {
-			duration, _ := strconv.Atoi(durationArgs[id])
-			processRequest(duration)
-			fmt.Printf("Job ID: %v: Job finished!\n", id)
-			finishChannel <- true
-		}(i)
+		if len(interruptChannel) == 0 {
+			fmt.Printf("Job ID: %v: Job waiting\n", i)
+			<-goroutinesChannel
+			if len(interruptChannel) == 0 {
+				fmt.Printf("Job ID: %v: Job is running\n", i)
+				go func(id int) {
+					duration, _ := strconv.Atoi(durationArgs[id])
+					processRequest(duration)
+					fmt.Printf("Job ID: %v: Job finished!\n", id)
+					finishChannel <- true
+				}(i)
+			}
+		}
 	}
-
 	<-waitForJobsChannel
 }
